@@ -33,6 +33,7 @@
   - [mysql主从复制](#mysql主从复制)
   - [mysql多源复制](#mysql多源复制)
   - [mysql组复制](#mysql组复制)
+  - [mysql小版本升级](#mysql小版本升级)
 - [读写分离](#读写分离)
   - [mycat读写分离](#mycat读写分离)
 - [高可用](#高可用)
@@ -46,7 +47,11 @@
     - [安装配置mha](#安装配置mha)
     - [验证是否成功完成](#验证是否成功完成)
 - [备份](#备份)
-  - [开发中](#开发中)
+  - [mysqltools备份相关的实现细节](#mysqltools备份相关的实现细节)
+  - [实施备份计划的前期准备](#实施备份计划的前期准备)
+  - [配置备份](#配置备份)
+  - [检查配置是否成功的几个点](#检查配置是否成功的几个点)
+  - [注意事项](#注意事项)
 - [巡检](#巡检)
   - [开发中]
 - [监控](#监控)
@@ -58,6 +63,8 @@
   - [改配置文件中zabbix_server_ip这个配置项](#改配置文件中zabbix_server_ip这个配置项)
   - [安装httpd](#安装httpd)
   - [安装zabbix服务端](#安装zabbix服务端)
+  - [安装zabbix客户端](#安装zabbix客户端)
+  - [通过mysqltools中给出的模板来监控mysql](#通过mysqltools中给出的模板来监控mysql)
 - [lnmp](#lnmp)
   - [安装mysql单机](#安装mysql单机)
   - [安装python](#安装python)
@@ -75,18 +82,19 @@
    
    这样我们就面临两个问题 1、**质量** 质量表现在解决问题的深度(类似问题还会再出现吗？) 2、**效率** 效率表现在你单位时间内解决问题的数量(安装一百个库的用时是一个库的100倍   吗？)； 通常这两个目标并不是互斥的，也就是说我们可以两个都做到。
 
+   ---
+
 1. ## 质量
    **KFC** vs **学校后街的蛋炒饭**
 
    KFC根据既定的流程生产每一个汉堡，假设这个流程下公众对汉堡给出的评分是80分，那么不管哪个KFC的店它生产出来的汉堡都稳定在80分；一段时间后它发现这个流程中可以改进的项，把汉堡的质量提升到81分，那么它就能做到所有的店里的汉堡都能打81分。
 
-   学校后街的蛋炒饭 好不好吃这个由事难说；因为好多事都影响到它，有可能老板今天心情不好，也有可能是今天客人太多他比较急，这些都会使得蛋炒饭不好吃。有一次我要买两盒，由于去的比较晚，老板只有一个鸡蛋了，你没有猜错！ 他就只放了一个蛋，按常理是要一盒一个的。
+   学校后街的蛋炒饭 好不好吃这个事难说；因为好多事都影响到它，有可能老板今天心情不好，也有可能是今天客人太多他比较急，这些都会影响到炒饭的质量。有一次我要买两盒，由于去的比较晚，老板只有一个鸡蛋了，你没有猜错！ 他就只放了一个蛋，按常理是要一盒一个的。
 
-   表面上看**KFC** 流程化生产的好处在于它的东西质量有保障，**最要命的是KFC只做加法，它可以不断提升自己，学校后街的蛋炒饭上周一做的好吃，我们没办法确认它那只是不是超水平发挥，蛋炒饭质量的方差太大了。**
+   表面上看**KFC** 流程化生产的好处在于它的东西质量有保障，**最要命的是KFC只做加法，它可以不断提升自己，学校后街的蛋炒饭上周一，做的好吃，我们没办法确认那是不是超水平发挥，蛋炒饭质量的方差太大了。**
 
    
    **对于DBA来说可以专门针对自己的日常工作开发一款工具，这样做的好处有 1:)由于工具已经把流程固定下来了所以“产出的质量”有保证 2:)随着自己技术的进步自己工作的输出也可以稳步提高。**  **这样我们在质量这个目标上就只做加法了。**
-   
    
    ---
 
@@ -97,7 +105,7 @@
    流水线相对于手工作坊，那是生产力的巨大提升。我为什么要说这个？因为在MySQL的使用中可能会遇到一些场景，比如说“分库分表”，“高可用+读写分离”；特别是前者通常就是一个MyCAT后面有好几十个分片，上百个MySQL实例(通常它们会为一个分片做一主两从并加上高可用)，装100+个MySQL今晚加班不？ 配100+个主从今晚加班不？ 不要忘记还要给它们加
    高可用呢？ 好吧这只是测试环境生产环境和测试环境是1:1的，那接下来几天加班不？ 对于生产通常还要加备份，监控那接下来几天加班不？
 
-   **这样的话DBA的工具不应该只是能输出高质量的产出，应该还要解放生产力，有排量管理的能力。**
+   **DBA的工具不应该只是能输出高质量的交付物，更应该要解放生产力----有批量管理的能力。**
 
    ---
 
@@ -107,7 +115,7 @@
    ---
 
 4. ## 技术介绍
-   1、mysqltools的高质量源自于**蒋乐兴**也就是我写出来的高质量的play-book
+   1、mysqltools的高质量源自于**蒋乐兴**也就是我写出来的高质量的playbook
 
    2、mysqltools的高效源自于**ansible**这个批量管理工具
 
@@ -136,14 +144,15 @@
    被控机       | 172.16.192.132     |centos-7.4    |
    ...         | ...                |centos-7.x    |
 
+   ---
+
    1. ### 安装前的准备
       1): **你的主控机上要配置有yum**、因为mysqltools要源码编译安装Python-3.6.2、这就涉及gcc ... 等依赖
    
       2): **有主控机的root账号(安装软件时会用到)**
    
       3): **被控机上也要配置好yum**
-   
-   
+
       ---
 
    2. ### 下载并解压
@@ -292,12 +301,18 @@
    
       mysqltools的配置文件是**mysqltools/config.yaml** 它是一个yaml格式的文件；配置项中最基本的有**mtls_base_dir、mysql_packages_dir、mysql_package**
    
-      1、**mtls_base_dir用于配置mysqltools的安装路径**：在[下载并解压](#下载并解压)这个步骤中我们把mysqltools解压到了/usr/local/、所以mtls_base_dir的值就应该等   于"/usr/local/mysqltools/"
+      1、**mtls_base_dir用于配置mysqltools的安装路径**：在[下载并解压](#下载并解压)这个步骤中我们把mysqltools解压到了/usr/local/、所以mtls_base_dir的值就应该等于"/usr/local/mysqltools/"
+
+      ---
    
-      2、**mysql_packages_dir用于配置MySQL二进制安装包保存的位置**：MySQL的安装包有600+MB、出于体量的原因mysqltools并没有直接把打包MySQL的二进制安装包、而是留有   mysql_packages_dir这个配置项，mysqltools会从这个目录中去找MySQL的二进制安装包，如果你把它设置成了/usr/local/src/mysql/那么MySQL的安装包就要保存到这里。
+      2、**mysql_packages_dir用于配置MySQL二进制安装包保存的位置**：MySQL的安装包有600+MB、出于体量的原因mysqltools并没有直接打包MySQL的二进制安装包、而是留有mysql_packages_dir这个配置项，mysqltools会从这个目录中去找MySQL的二进制安装包。
+
+      ---
    
-      3、**mysql_package用于配置MySQL安装包的名字**、有这个变量的因为是为了，可以做到有多个不同的MySQL的版本共存、默认值为   mysql-5.7.21-linux-glibc2.12-x86_64.tar.gz
+      3、**mysql_package用于配置MySQL安装包的名字**、有这个变量的因为是为了，可以做到有多个不同的MySQL的版本共存、默认值为   mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz
       
+      ---
+
       config.yaml的关键内容大致如下：
       ```yaml
       mtls_base_dir: /usr/local/mysqltools/
@@ -305,6 +320,8 @@
       mysql_package: mysql-5.7.21-linux-glibc2.12-x86_64.tar.gz
       ```
       注意：在mysqltools中所有的目录都是要以'/'号结尾的
+
+      ---
    
       **如果你正确的完成了mysqltools相关的配置那么config.yaml看起来就应该是这样的**
       ```
@@ -328,12 +345,17 @@
       mtls_python: python-3.6.2.tar.xz
       mtls_mysql_connector_python: mysql-connector-python-2.1.5.tar.gz
       mtls_mycat: mycat-server-1.6.5-linux.tar.gz
-      mtls_mha_node: install_mha_node-for-centos-7.2.tar.gz
-      mtls_mha_manager: install_mha_manager-for-centos7.2.tar.gz
+      mtls_mha_node: mhanode.tar.gz
+      mtls_mha_manager: mhamanager.tar.gz
       mtls_git: git-2.9.5.tar.gz
       mtls_nginx: nginx-1.13.7.tar.gz
       mtls_sysbench: sysbench-1.1.0.tar.gz
       mtls_meb: meb-4.1.0-linux-glibc2.5-x86-64bit.tar.gz
+      mtls_xtrb: percona-xtrabackup-2.4.9-Linux-x86_64.tar.gz
+      mtls_mysqlclient: mysqlclient-1.3.12.tar.gz
+      mtls_pytz: pytz-2018.4.tar.gz
+      mtls_django: django-2.0.4.tar.gz
+      mtls_uwsgi: uwsgi-2.0.17.tar.gz
       
       #mysql与php-5.6.x 是否要同时安装在一台主机上、如果是就要把这个设置成yes、以为php导出mysqclient_r.so文件
       mtls_with_php: 1
@@ -352,7 +374,7 @@
       #mysql 安装包所在的目录
       mysql_packages_dir: /usr/local/src/mysql/
       #mysql 安装包的名字
-      mysql_package: mysql-5.7.21-linux-glibc2.12-x86_64.tar.gz
+      mysql_package: mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz
       #linux 系统级别mysql用户相关信息
       mysql_user: mysql
       mysql_group: mysql
@@ -365,26 +387,36 @@
       mysql_port: 3306
       mysql_root_password: mtls0352
       mysql_zabbix_password: mtls
-      mysql_rple_user: rple
-      mysql_rple_password: mtls0352
+      mysql_rple_user: repl
+      mysql_rple_password: repl0352
       mysql_mha_user: mha
       mysql_mha_password: mtls0352
       mysql_app_user: appuser
       mysql_app_password: mtls0352
       mysql_monitor_user: monitor
       mysql_monitor_password: monitor0352
+      mysql_backup_user: backup
+      mysql_backup_password: DX3906
       #mysql 配置文件模版
       mysql_binlog_format: row
-      mysql_innodb_log_files_in_group: 8
-      mysql_innodb_log_file_size: 128M
-      mysql_innodb_log_buffer_size: 128M
+      mysql_innodb_log_files_in_group: 16
+      mysql_innodb_log_file_size: 256M
+      mysql_innodb_log_buffer_size: 64M
       mysql_innodb_open_files: 65535
+      mysql_max_connections: 1000
+      mysql_thread_cache_size: 256
+      mysql_sync_binlog: 1
+      mysql_binlog_cache_size: 64K
+      mysql_innodb_online_alter_log_max_size: 128M
+      mysql_performance_schema: 'on'
+      
       #mysql 
       
       ####
       #### zabbix 相关的配置
       #####
-      zabbix_server_ip: 172.16.192.10
+      zabbix_server_ip: 172.16.192.101
+
    
       ```
       为了你能更加方便的使用mysqltools我提供了份linux上的标准配置文件**mysqltools/config.yaml-for-linux** 使用时只要把它重命名成**cofnig.yaml**就行了
@@ -393,9 +425,9 @@
 
       5): **下载MySQL**
    
-      根据上面的配置可以知道MySQL的安装包要保存到**/usr/local/src/mysql/**目录下、包的版本为mysql-5.7.21-linux-glibc2.12-x86_64.tar.gz
+      根据上面的配置可以知道MySQL的安装包要保存到**/usr/local/src/mysql/**目录下、包的版本为mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz
       
-      下载地址如下：https://dev.mysql.com/get/Downloads/MySQL-5.7/mysql-5.7.21-linux-glibc2.12-x86_64.tar.gz
+      下载地址如下：https://dev.mysql.com/get/Downloads/MySQL-5.7/mysql-5.7.22-linux-glibc2.12-x86_64.tar.gz
        
       ```bash
       cd /usr/local/src/mysql/
@@ -403,6 +435,7 @@
       
    
       ```
+
 
 ---
 
@@ -449,6 +482,8 @@
 
    2. ### 自动化mysql单实例安装
       **mysqltools/deploy/ansible/** 目录下的每一个子目录都对应一类软件环境的自动化安装、我们这次是要安装MySQL所以应该进入到mysql子目录
+
+      ---
    
       1. #### 进入mysql功能目录
           ```
@@ -469,7 +504,7 @@
           ```
           由于/usr/local/mysqltools/deploy/ansible/下的每一个子目录都实现某一类功能，于是我们约定/usr/local/mysqltools/deploy/ansible/下的子目录叫**功能目录**,   功能目录下的会包含若干.yaml文件，每一个文件都实现了特定的功能，如install_single_mysql.yaml实现了自动化安装MySQL的功能。
        
-       ---
+          ---
        
       2. #### 指定安装的目标主机
 
@@ -642,7 +677,7 @@
 
       **1):自动化安装的方式相对于人肉来说要快很多**
 
-      **2):支持排量操作也就是说可能同时在多台主机上执行、只要在hosts: 变量的值是一个主机组就行了**
+      **2):支持批量操作也就是说可以同时在多台主机上执行、只要在hosts: 变量的值是一个主机组就行了**
 
       ---
 
@@ -650,7 +685,11 @@
 
       **1、mysqltools是流程化的，如上面的安装MySQL就包含20+的小步骤，尽量做到面面俱到**  
 
+      ---
+
       **2、mysqltools尽可能的在各个小步骤中都保持高的质量、比如/etc/my.cnf各个参数的配置都会根据主机当前的cpu & 内存进行配置**
+
+      ---
 
       以下是一个host_132的/etc/my.cnf **这些都是由mysqltools针对单机环境动态生成的**
 
@@ -817,6 +856,8 @@
    **原生环境安装主要包含 1、MySQL单机 2、主从复制 3、多源复制 4、组复制(mysql-group-replication)**
    如果这是你第一次使用mysqltools可以从[mysqltools快速开始](#mysqltools快速开始)章节开启你的mysqltools之旅
 
+   ---
+
    1. ### mysql单机
       **1):进入mysql功能目录**
       ```bash
@@ -824,6 +865,8 @@
       
       cd mysql  #进入mysql功能目录
       ```
+
+      ---
 
       **2):指定install_single_mysql.yaml中的目标主机**
 
@@ -834,11 +877,15 @@
       ```
       yaml格式对空间是非常敏感的、注意“:”后面是有个空格的
 
+      ---
+
       **3):执行自动化安装**
       ```bash
       ansible-playbook install_single_mysql.yaml
       ```
       输出省略 ... ...
+
+      ---
 
       **4):验证mysql是否成功安装**
       ```bash
@@ -868,6 +915,8 @@
    2. ### mysql主从复制  
       假设我们要在**10.186.19.15，10.186.19.16，10.186.19.17**三台主机上建设一个一主两从的主从复制环境，其中10.186.19.15为主库
 
+      ---
+
       **1):增加主机信息到/etc/ansible/hosts**
 
       向/etc/ansible/hosts文件中增加如下内容
@@ -878,12 +927,16 @@
       replslave17 ansible_host=10.186.19.17
       ```
 
+      ---
+
       **2):进入mysql功能目录**
       ```bash
       cd /usr/local/mysqltools/deploy/ansible
       
       cd mysql  #进入mysql功能目录
       ```
+
+      ---
 
       **3):指定install_master_slaves.yaml中的目标主机**
 
@@ -900,6 +953,8 @@
         - 10.186.19.16
         - 10.186.19.17
       ```
+
+      ---
 
       **4):执行自动化安装**
       ```bash
@@ -921,6 +976,8 @@
       replslave16                 : ok=28   changed=19   unreachable=0    failed=0   
       replslave17                 : ok=28   changed=19   unreachable=0    failed=0 
       ```
+
+      ---
 
       **5):检查主从复制环境是否配置完成**
       ```
@@ -958,6 +1015,8 @@
 
       假设我们要在**10.186.19.15，10.186.19.16，10.186.19.17**这三台机器上搭建两主1从的多源复制环境、其中15，16两机器上的数据向17同步
 
+      ---
+
       **1):增加主机信息到/etc/ansible/hosts**
 
       向/etc/ansible/hosts文件中增加如下内容
@@ -968,12 +1027,16 @@
       replslave17 ansible_host=10.186.19.17
       ```
 
+      ---
+
       **2):进入mysql功能目录**
       ```bash
       cd /usr/local/mysqltools/deploy/ansible
       
       cd mysql  #进入mysql功能目录
-      ```      
+      ``` 
+
+      ---     
 
       **3):指定install_multi_source_replication.yaml中的目标主机**
 
@@ -993,6 +1056,8 @@
       slave_ip: '10.186.19.17'
       ```
 
+      ---
+
       **4):执行自动化安装**
       ```bash
       ansible-playbook install_multi_source_replication.yaml 
@@ -1000,6 +1065,8 @@
       输出省略
       ```
       ```
+
+      ---
 
       **5):检测多源复制环境是否安装成功**
       ```
@@ -1042,6 +1109,8 @@
    4. ### mysql组复制
       假设我们要在**10.186.19.15，10.186.19.16，10.186.19.17**这三台机器上搭建一个group replication 环境
 
+      ---
+
       **1):增加主机信息到/etc/ansible/hosts**
 
       向/etc/ansible/hosts文件中增加如下内容
@@ -1052,12 +1121,17 @@
       mgr17 ansible_host=10.186.19.17
       ```
 
+      ---
+
       **2):进入mysql功能目录**
       ```bash
       cd /usr/local/mysqltools/deploy/ansible
       
       cd mysql  #进入mysql功能目录
       ``` 
+
+      ---
+
       **3):指定install_group_replication.yaml中的目标主机**
 
       假设我要在repl主机组上安装mysql复制环境那么install_group_replication.yaml文件中的hosts变量应该设置为repl
@@ -1069,12 +1143,15 @@
       ```
       mtls_with_mysql_group_replication: 1
       mysql_binlog_format: row
-      mysql_mgr_port: 33060
+      mysql_mgr_port: 13306
       mysql_mgr_hosts: 
           - '10.186.19.15'
           - '10.186.19.16'
           - '10.186.19.17'
       ```
+
+      ---
+
       **4):执行自动化安装**
       ```bash
       ansible-playbook install_group_replication.yaml 
@@ -1093,6 +1170,8 @@
       mgr16                : ok=28   changed=18   unreachable=0    failed=0   
       mgr17                : ok=28   changed=18   unreachable=0    failed=0 
       ```
+
+      ---
       
       **5):检查group replication集群是否安装成功**
       ```bash
@@ -1130,18 +1209,125 @@
       loose-group_replication_poll_spin_loops               =0                                          #   0
       loose-group_replication_compression_threshold         =1024                                       #   1000000
       loose-group_replication_flow_control_mode             =QUOTA                                      #   QUOTA
-      loose-group_replication_local_address                 ="10.186.19.15:33060"
-      loose-group_replication_group_seeds                   ="10.186.19.15:33060,10.186.19.16:33060,10.186.19.17:33060"
+      loose-group_replication_local_address                 ="10.186.19.15:13306"
+      loose-group_replication_group_seeds                   ="10.186.19.15:13306,10.186.19.16:13306,10.186.19.17:13306"
       ```
       也就是说目前mysqltools在配置group replication 集群环境时是按单个写结点的方式配置的、**默认mysqltools把第一个ip地址设置为写结点**
 
       ---
 
+   5. ### mysql小版本升级
+      **mysqltools为版本升级提供了支持，如果你想使用这个功能，那么你要清楚的知道自己在干什么**
+
+      ---
+
+      1、小版本升级并不会去执行`mysql_upgrade`脚本，这个主要是由于mysqltools诞生环境比较特别，单个实例的数据量是以`TB`来衡量的，在这种量级的情况下`mysql_upgrade`可以能执行几天才能完成，所以你懂的
+
+      ---
+
+      **1):修改upgrad_single_mysql.yaml文件的hosts 变量为你要升级的目标主机**
+
+      ```
+      ---
+       - hosts: sqlstudio
+      ```
+
+      ---
+
+      **2):执行升级程序**
+      ```
+      ansible-playbook upgrad_single_mysql.yaml
+      ```
+      输出如下：
+      ```
+      PLAY [sqlstudio] **************************************************************************************************************
+      
+      TASK [Gathering Facts] ********************************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [stop mysql service] *****************************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [backup link file] *******************************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [unarchive new package to /usr/local/] ***********************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [change owner and group] *************************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [make new link file] *****************************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [start mysql service] ****************************************************************************************************
+      changed: [sqlstudio]
+      
+      PLAY RECAP ********************************************************************************************************************
+      sqlstudio                  : ok=7    changed=5    unreachable=0    failed=0
+      ```
+
+      ---
+
+      **3):查看升级是否成功**
+      
+      1、看/usr/local/下的变化
+
+      **升级前**
+      ```
+      drwxr-xr-x   9 mysql mysql 129 6月  18 14:46 mysql-5.7.21-linux-glibc2.12-x86_64
+      lrwxrwxrwx   1 root  root   35 6月  18 14:53 mysql -> mysql-5.7.21-linux-glibc2.12-x86_64
+      ```
+      **升级后**
+      ```
+      lrwxrwxrwx   1 mysql mysql  46 6月  18 15:30 mysql -> /usr/local/mysql-5.7.22-linux-glibc2.12-x86_64
+      drwxr-xr-x   9 mysql mysql 129 6月  18 14:46 mysql-5.7.21-linux-glibc2.12-x86_64
+      drwxr-xr-x   9 mysql mysql 129 6月  18 15:30 mysql-5.7.22-linux-glibc2.12-x86_64
+      lrwxrwxrwx   1 root  root   35 6月  18 14:53 mysql.backup.20180618 -> mysql-5.7.21-linux-glibc2.12-x86_64
+      ```
+
+      ---
+
+      2、连接进数据库进行检察
+      ```
+      mysql -uroot -pxxxxxx
+      ```
+
+      ```                                                              
+      mysql: [Warning] Using a password on the command line interface can be insecure.
+      Welcome to the MySQL monitor.  Commands end with ; or \g.
+      Your MySQL connection id is 3
+      Server version: 5.7.22-log MySQL Community Server (GPL)
+      
+      Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+      
+      Oracle is a registered trademark of Oracle Corporation and/or its
+      affiliates. Other names may be trademarks of their respective
+      owners.
+      
+      Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+      
+      mysql>select @@version;
+      +------------+
+      | @@version  |
+      +------------+
+      | 5.7.22-log |
+      +------------+
+      1 row in set (0.00 sec)
+      ```
+
+      ---
+
+ 
 ## 读写分离
-   本来这里是要加入分库分表的功能的、因为用yaml难以表达mycat的相关配置、最终我还是放弃了、所以目前mysqltools还只有自动化安装配置mycat读写分离的功能
+   **本来这里是要加入分库分表的功能的、因为用yaml难以表达mycat的相关配置、最终我还是放弃了、所以目前mysqltools还只有自动化安装配置mycat读写分离的功能**
+
+   ---
 
    1. ### mycat读写分离
       假设我们已经有了套三结点的集群10.186.19.15，10.186.19.16，10.186.19.17，其中15支持读写，16、17只读；为了方面应用程序我们要在10.186.19.14上安装一个mycat用它做读写分离，这样应用只要配置一个连接字符串就可以了(连接mycat)
+
+      ---
 
       **1):在数据库中创建用户、mycat会有这个用户连接数据库**
 
@@ -1153,11 +1339,15 @@
       grant all on appdb.* to appuser@'%';
       ```
 
+      ---
+
       **2):向/etc/ansible/hosts文件增加主机信息**
       向/etc/ansible/hosts文件增加如下内容
       ```
       mycat ansible_host=10.186.19.14
       ```
+
+      ---
 
       **3):更新var/var_mycat.yaml文件**
 
@@ -1172,12 +1362,17 @@
       schemas:
        - "appdb"
       ```
+      **可以把master_ip设置为vip、slave_ips设置为所有ip的一个列表，这样就可以不在意高可用环境下的主从切换了**
+
+      ---
 
       **4):修改install_mycat.yaml文件中的hosts**
       ```
       ---
        - hosts: mycat
       ```
+
+      ---
 
       **5):执行mycat的安装**
       ```
@@ -1221,6 +1416,8 @@
       mycat                      : ok=10   changed=9    unreachable=0    failed=0   
       ```
 
+      ---
+
       **6):检查mycat是否启动**
       ```
       ps -ef | grep mycat
@@ -1230,6 +1427,8 @@
       root     24415     1  0 09:21 ?        00:00:00 /usr/local/mycat/bin/./wrapper-linux-x86-64 /usr/local/mycat/conf/wrapper.conf wrapper.syslog.ident=mycat wrapper.pidfile=/usr/local/mycat/logs/mycat.pid wrapper.daemonize=TRUE wrapper.lockfile=/var/lock/subsys/mycat
       root     24417 24415 12 09:21 ?        00:00:06 java -DMYCAT_HOME=. -server -XX:MaxPermSize=64M -XX:+AggressiveOpts -XX:MaxDirectMemorySize=2G -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=1984 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Xmx4G -Xms1G -Djava.library.path=lib -classpath lib/wrapper.jar:conf:lib/zookeeper-3.4.6.jar:lib/jline-0.9.94.jar:lib/ehcache-core-2.6.11.jar:lib/log4j-1.2.17.jar:lib/fastjson-1.2.12.jar:lib/curator-client-2.11.0.jar:lib/joda-time-2.9.3.jar:lib/log4j-slf4j-impl-2.5.jar:lib/libwrapper-linux-x86-32.so:lib/netty-3.7.0.Final.jar:lib/druid-1.0.26.jar:lib/log4j-api-2.5.jar:lib/mapdb-1.0.7.jar:lib/slf4j-api-1.6.1.jar:lib/univocity-parsers-2.2.1.jar:lib/hamcrest-core-1.3.jar:lib/objenesis-1.2.jar:lib/leveldb-api-0.7.jar:lib/hamcrest-library-1.3.jar:lib/wrapper.jar:lib/commons-lang-2.6.jar:lib/reflectasm-1.03.jar:lib/mongo-java-driver-2.11.4.jar:lib/guava-19.0.jar:lib/curator-recipes-2.11.0.jar:lib/curator-framework-2.11.0.jar:lib/libwrapper-linux-ppc-64.so:lib/log4j-core-2.5.jar:lib/mysql-binlog-connector-java-0.6.0.jar:lib/netty-common-4.1.9.Final.jar:lib/leveldb-0.7.jar:lib/sequoiadb-driver-1.12.jar:lib/kryo-2.10.jar:lib/jsr305-2.0.3.jar:lib/commons-collections-3.2.1.jar:lib/mysql-connector-java-5.1.35.jar:lib/disruptor-3.3.4.jar:lib/log4j-1.2-api-2.5.jar:lib/velocity-1.7.jar:lib/Mycat-server-1.6.5-release.jar:lib/libwrapper-linux-x86-64.so:lib/dom4j-1.6.1.jar:lib/minlog-1.2.jar:lib/asm-4.0.jar:lib/netty-buffer-4.1.9.Final.jar -Dwrapper.key=sexYToWnzGO4Glh1 -Dwrapper.port=32000 -Dwrapper.jvm.port.min=31000 -Dwrapper.jvm.port.max=31999 -Dwrapper.pid=24415 -Dwrapper.version=3.2.3 -Dwrapper.native_library=wrapper -Dwrapper.service=TRUE -Dwrapper.cpu.timeout=10 -Dwrapper.jvmid=1 org.tanukisoftware.wrapper.WrapperSimpleApp io.mycat.MycatStartup start
       ```
+
+      ---
 
       **7):测试mycat的可用性**
       ```
@@ -1271,10 +1470,6 @@
       +----+--------+
       ```
       mycat 读写分离环境测试成功.
-
-
-
-   ---
 
 ---
 
@@ -1457,8 +1652,12 @@
       slave2                     : ok=15   changed=14   unreachable=0    failed=0  
       ```
 
+      ---
+
    8. ### 验证是否成功完成
       **mysqltools在安装配置mha后并没有并没有把相关安装包直接删除、而是保留在了/tmp/mhanode /tmp/mhamanager 这两个目录下；目录下还包含用于验证结果的的脚本**
+
+      ---
 
       **1、验证master主机是否成功的绑定了vip**
       ```
@@ -1505,6 +1704,8 @@
       ---
 
       **事实上完成上面的两项如果都成功了、那么你的mha就算配置成功了、但是为了排错的方便我还是在/tmp/mhamanager目录下留下了一些用于check脚本**
+
+      ---
 
       **3、检查ssh互信是否配置正确**
       ```
@@ -1598,11 +1799,267 @@
 
       最后一行`MySQL Replication Health is OK.`说明mysql复制是正常的
       
-      ---
+---
       
+## 备份
+   **备份的作用在些不表。单单从备份工具来看就有mysqldup,xtrabackup,mysqlbackup三种可选的工具；备份工具是只完成备份计划的手段，比如说周日做全备，其它几天每天一个差异备份，就这样一个备份计划而言我选择xtrabackup,mysqlbackup都是可以的。但是为了方便使用mysqltools把备份实现的细节通过一个python程序包装起来，用户只要告诉mysqltools他要什么时候做全备，什么时候做差异备份就行了。隐去了实现的细节dba可以更加的专注问题的核心**
+
+   ---
+
+   1. ### mysqltools备份相关的实现细节
+      **1): mysqltool/mysqltoolclient/mtlsbackup.py**
+
+      这是一个由python脚本的脚本、它的目的有两个 1):隔离mysqldump,xtrabackup,mysqlbackup这三个备份工具的差异，用户在做备份里只要调用`mtlsbackup.py`就行了。2):它还要完成完整的备份决策(根据dba的配置来决定什么时候做全备，什么时候做增备；它也会根据实际情况对决策进行调整，如果dba配置的是每周日一个全备，其它几天做差异备份。假设dba配置这个备份计划的时候是周3，根据配置要求周3是要做差异备份的，由于现在(周三)还没有全备呢，mtlsbackup.py会这次的备份执行情况做调整，把它从差异备份调整成全备)
+
+      ---
+
+      **2): /etc/mtlsbackup.cnf**
+
+      为了方便使用`mtlsbackup.py`尽可能的避免命令行参数，而是采用从配置文件直接读取备份计划的方式来完成备份，以下是一份完成的备份计划的样例
+      ```
+      [global]
+      backup_tool=xtrabackup                             #备份工具xtrabackup,mysqldump,meb 之一
+      user=backup                         #备份用户(mysql级别) 静态值请不要修改
+      password=DX3906                 #密码 静态值请不要修改
+      host=127.0.0.1                                     #主机 静态值请不要修改
+      port=3306                                #端口 静态值请不要修改
+      full_backup_days=6                                 #指定哪些天做全备    6-->周日 5-->周六 4-->周五... ...
+      diff_backup_days=0,1,2,3,4,5                       #指定哪些天做差异备  6-->周日 5-->周六 4-->周五... ...
+      backup_data_dir=/database/backups/3306/data/       #备份保存的路径
+      backup_log_dir=/database/backups/3306/log/         #使用xtrackup备份时check_point文件的目录
+      backup_temp_dir=/database/backups/3306/temp/       #xtrabackup的工作目录
+      
+      [xtrabackup]
+      full_backup_script=/usr/local/xtrabackup/bin/xtrabackup --defaults-file=/etc/my.cnf --host={self.host} --port={self.port} --user={self.user} --password={self.password} --no-version-check --compress --compress-threads=4 --use-memory=200M --stream=xbstream  --parallel=8 --backup  --extra-lsndir={self.lsndir} --target-dir={self.backup_temp_dir} > {self.full_backup_file} 2>{self.full_backup_log_file} &
+      diff_backup_script=/usr/local/xtrabackup/bin/xtrabackup --defaults-file=/etc/my.cnf --host={self.host} --port={self.port} --user={self.user} --password={self.password} --no-version-check --compress --compress-threads=4 --use-memory=200M --stream=xbstream  --parallel=8 --backup  --extra-lsndir={self.lsndir} --target-dir={self.backup_temp_dir} --incremental --incremental-lsn={self.tolsn} > {self.diff_backup_file}  2>{self.diff_backup_log_file} &
+      ```
+      一直以提高生产力为目标的mysqltools是不会让你手工编写这个配置文件它，它会根据机器的配置自动生成
+
+      ---
+
+      **3): /database/backups/这个目录是用来保存备份文件的地方**
+      ```
+      tree /database/backups/
+      ```
+      输出如下：
+      ```
+      /database/backups/
+      ├── 3306
+      │   ├── data
+      │   │   └── 2018-07-28T13:38:01
+      │   │       ├── 2018-07-28T13:38:01-full.log
+      │   │       ├── 2018-07-28T13:38:01-full.xbstream
+      │   │       ├── 2018-07-28T13:40:05-diff.log
+      │   │       ├── 2018-07-28T13:40:05-diff.xbstream
+      │   │       ├── 2018-07-28T13:42:04-diff.log
+      │   │       ├── 2018-07-28T13:42:04-diff.xbstream
+      │   ├── log
+      │   │   ├── 2018-07-28T13:38:01
+      │   │   │   ├── xtrabackup_checkpoints
+      │   │   │   └── xtrabackup_info
+      │   │   ├── 2018-07-28T13:40:05
+      │   │   │   ├── xtrabackup_checkpoints
+      │   │   │   └── xtrabackup_info
+      │   │   ├── 2018-07-28T13:42:04
+      │   │   │   ├── xtrabackup_checkpoints
+      │   │   │   └── xtrabackup_info
+      ```
+
+      ---
+
+   2. ### 实施备份计划的前期准备
+      **1): 如前面所说的mtlsbackup.py是一个python写的包装脚本它的运行依赖于python3你要在目标主机上安装python，见[安装python](#安装python)**
+
+      ---
+
+      **2): 配置MySQL数据库的备份计划**
+      
+      配置文件`mysqltools/deploy/ansible/backup/template/mtlsbackup.cnf`中的`full_backup_days`代表着哪些表执行全备，`diff_backup_days`代表着哪些天执行差异备份
+      ```
+      full_backup_days=7                                 #指定哪些天做全备    6-->周日 5-->周六 4-->周五... ...
+      diff_backup_days=1,2,3,4,5,6                       #指定哪些天做差异备  6-->周日 4-->周六 4-->周五... ...
+      ```
+      **建议不要改保持默认值**
+
+      ---
+
+      **3): 配置crontab执行备份的时机**
+
+      配置文件`mysqltools/deploy/ansible/backup/vars/mtlsbackup.yaml`中`backup_minute`对应linux crontab 中的minute,`backup_hour`对应linux crontab 中的hour,`backup_user`对应linux crontab 中的user
+      ```
+      ---
+      backup_minute: "0" 
+      backup_hour: "2"
+      backup_user: "mysql"
+      
+      #backup_minute 对应linux crontab 中的minute
+      #backup_hour   对应linux crontab 中的hour
+      #backup_user   对应linux crontab 中的user
+      
+      # 上面的默认配置表示每天的02:00:00时对数据库进行备份
+      ```
+      **建议不要改保持默认值**
+
+      ---
+
+   3. ### 配置备份
+      **1): 配置备份的工作目录在mysqltools/deploy/ansible/backup**
+
+      修改config_backup.yaml文件中的hosts为你的目标主机,这里以sqlstudio这个主机为例，所以config_backup.yaml的内容如下
+      ```
+      ---
+       - hosts: sqlstudio
+      ```
+      ---
+
+      **2):实施备份计划**
+      ```
+      ansible-playbook config_backup.yaml
+      ```
+      输出如下：
+      ```
+      PLAY [sqlstudio] **************************************************************************************************************
+      
+      TASK [Gathering Facts] ********************************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [transfer extrabackup install package to remonte host] *******************************************************************
+      ok: [sqlstudio]
+      
+      TASK [make link file fore percona-xtrabackup-2.4.9-Linux-x86_64] **************************************************************
+      ok: [sqlstudio]
+      
+      TASK [export path env variable] ***********************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [export path env to /root/.bashrc] ***************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [transfer mysqltoolsclient to remote] ************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [config file mode] *******************************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [create /database/backups dir] *******************************************************************************************
+      ok: [sqlstudio]
+      
+      TASK [transfer create_backup_user.sql file to remote host] ********************************************************************
+      skipping: [sqlstudio]
+      
+      TASK [execute create_backup_user.sql] *****************************************************************************************
+      skipping: [sqlstudio]
+      
+      TASK [remove /tmp/create_backup_user.sql] *************************************************************************************
+      skipping: [sqlstudio]
+      
+      TASK [config /etc/mtlsbackup.cnf] *********************************************************************************************
+      changed: [sqlstudio]
+      
+      TASK [config crontab] *********************************************************************************************************
+      changed: [sqlstudio]
+      
+      PLAY RECAP ********************************************************************************************************************
+      sqlstudio                  : ok=10   changed=4    unreachable=0    failed=0 
+      ```
+      ---
+
+   4. ### 检查配置是否成功的几个点
+      **1): 检查crond是否正确配置备份任务**
+      ```
+      sudo -umysql crontab -l 
+      ```
+      输出如下：
+      ```                                                          
+      #Ansible: mtlsbackup
+      0 2 * * * /usr/local/python/bin/python3 /usr/local/mysqltoolsclient/mtlsbackup.py 2>>/database/backups/mtlsbackup.log
+      ```
+      由上面的配置可以看出crontab已经配置好了
+
+      ---
+
+      **2): 检查mysql用户是否能成功执行备份任务***
+
+      手动调用crontab中的备份命令
+      ```
+      su mysql
+      /usr/local/python/bin/python3 /usr/local/mysqltoolsclient/mtlsbackup.py
+      ```
+      输出如下：
+      ```
+      [2018-07-28 15:26:08,853] [mtlsbackup.py] [INFO] read config file /etc/mtlsbackup.cnf
+      [2018-07-28 15:26:08,854] [mtlsbackup.py] [INFO] 开始检查 /database/backups/3306/data/ 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [WARNING] 目录 /database/backups/3306/data/ 不存在,准备创建... 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 目录 /database/backups/3306/data/ 创建完成 ...
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 开始检查 /database/backups/3306/log/ 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [WARNING] 目录 /database/backups/3306/log/ 不存在,准备创建... 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 目录 /database/backups/3306/log/ 创建完成 ...
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 开始检查 /database/backups/3306/temp/ 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [WARNING] 目录 /database/backups/3306/temp/ 不存在,准备创建... 
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 目录 /database/backups/3306/temp/ 创建完成 ...
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 今天星期 5 根据配置文件中的备份计划，决定进行差异备份
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 进入差异备份流程
+      [2018-07-28 15:26:08,855] [mtlsbackup.py] [INFO] 准备检查最近一次的全备是否成功...
+      [2018-07-28 15:26:08,856] [mtlsbackup.py] [WARNING] 没有可用的备份集(全备))
+      [2018-07-28 15:26:08,856] [mtlsbackup.py] [INFO] 创建用于保存全备的目录 /database/backups/3306/data/2018-07-28T15:26:08
+      [2018-07-28 15:26:08,856] [mtlsbackup.py] [INFO] 使用如下命令对MySQL数据库进行全备 /usr/local/xtrabackup/bin/xtrabackup --defaults-file=/etc/my.cnf --host=127.0.0.1 --port=3306 --user=backup --password=DX3906 --no-version-check --compress --compress-threads=4 --use-memory=200M --stream=xbstream  --parallel=8 --backup  --extra-lsndir=/database/backups/3306/log/2018-07-28T15:26:08 --target-dir=/database/backups/3306/temp/ > /database/backups/3306/data/2018-07-28T15:26:08/2018-07-28T15:26:08-full.xbstream 2>/database/backups/3306/data/2018-07-28T15:26:08/2018-07-28T15:26:08-full.log &
+      ```
+      根据上面的输出可以知道mtlsbackup.py已经成功执行了，不过备份有没有成功这个两是要看一下xtrabckup的日志才行，从mtlsbackup.py的日志可以看到xtrabackup把日志保存到了/database/backups/3306/data/2018-07-28T15:26:08/2018-07-28T15:26:08-full.log 
+      ```
+      tail -2 /database/backups/3306/data/2018-07-28T15:26:08/2018-07-28T15:26:08-full.log 
+      ```
+      输出如下：
+      ```
+      xtrabackup: Transaction log of lsn (2589200) to (2589209) was copied.
+      180728 15:26:10 completed OK!
+      ```
+      说明备份成功了！
+
+      ---
+
+      **3): 查看备份文件**
+      ```
+      tree /database/backups/
+
+      ```
+      输出如下：
+      ```
+      /database/backups/
+      └── 3306
+          ├── data
+          │   └── 2018-07-28T15:26:08
+          │       ├── 2018-07-28T15:26:08-full.log
+          │       └── 2018-07-28T15:26:08-full.xbstream
+          ├── log
+          │   └── 2018-07-28T15:26:08
+          │       ├── xtrabackup_checkpoints
+          │       └── xtrabackup_info
+          └── temp
+      
+      6 directories, 4 files
+      ```
+      
+      ---
+
+   5. ### 注意事项
+      **1): mtlsbakup.py还在开发中目前只包装了xtrabackup,以后有时候会把meb,mysqldump都会包进去**
+
+      ---
+
+      **2): 如果你使用mysqltools-2.18.07.28之前的版本创建了mysql数据库，它默认是不会创建backup用户的，所以你应该为数据库手工创建backup用户，相关SQL在mysqltools/deploy/ansible/backup/template/create_backup_user.sql文件中用。如果你不想手工创建backup用户而是让mysqltools去创建，那么你要把config_backup.yaml中的create_user变量设置为1**
+
+---
+      
+
+
+
+
 
 ## 监控
    **mysqltools的出发点是以提升生产力为目标的、但凡能用电解决的事、就不要动用人力;我们的目标是认机器检测到问题后尽可能的自动解决掉它、解决完成后发个通知就行。这一切的基础是要有一套完善的监控系统，mysqltools在这方面使用的是zabbix这个开源解决方案。**
+
+   ---
+   
    1. ### 目前已经实现的监控项
       目前我已经用python实现了200+个监控项，可以把监控项大致分成三大块 1): variable 类型的监控项、这类监控项的作用是为了可以追踪参数变更后对MySQL各个方面的影响；
       2): status 类型的监控项、这类监控项主要用于对实例实时信息的收集可用于提前发现问题、解决问题；3):ps 类型的监控项 这类监控项主要会对MySQL某一特定维度的监控、如
@@ -1766,8 +2223,17 @@
       |`-- MgrCountTransactionsChecked` | 当前mgr成员上已经完成冲突检测的事务数量                            | p_s    |
       |`-- MgrCountConflictsDetected`   | 当前mgr成员上没能通过冲突检测的事务数量                            | p_s    |
       |`-- MgrTransactionsCommittedAllMembers`|当前mgr成员上已经应用的事务总数量                            | p_s    |
+      |`-- RplSemiSyncMasterClients`    | 当前master端处理半同步状态的slave数量                             | status |
+      |`-- RplSemiSyncMasterStatus`     | master的半同步状态                                              | status |
+      |`-- RplSemiSyncMasterNoTx`       | 没有收到半同步slave确认的事务数量                                  | status |
+      |`-- RplSemiSyncMasterYesTx`      | 有收到半同步slave确认的事务数量                                    | status |
+      |`-- RplSemiSyncSlaveStatus`      | slave的半同步状态                                               | status |
+      |`-- SlaveIORunning`              | IO线程的状态(-1:说明当前实例是master,0:非Yes,1:Yes)               | show slave status |
+      |`-- SlaveSQLRunning`             | SQL线程的状态(-1:说明当前实例是master,0:非Yes,1:Yes)              | show slave status |
+      |`-- SecondsBehindMaster`         | Seconds behind master                                         | show slave status |
 
       ---
+
 
    2. ### 监控项的人肉使用方法
       MySQL相关监控项的采集脚本为**mysqltools/mysqltoolsclient/monitor.py**  它是一个python3风格的脚本、所以如果你想成功的运行它那么你就要安装好python3的环境；好消息是mysqltools有python3自动化安装的功能(见[安装python](#安装python))；安装好python3后把**mysqltools/mysqltoolsclient**目录复制到你要监控的目标主机就
@@ -2017,8 +2483,141 @@
 
       ---
 
-   8. ### 安装zabbix服务端
-      未完...
+   9. ### 安装zabbix服务端
+      **1):配置mysqltools/config.yaml**
+
+      mysqltools配置文件中的`zabbix_server_ip: xxx.xxx.xxx.xxx`用来指定zabbix_server主机的ip地址，这个地址会在zabbix_agent的配置文件中用到，由于zabbix_server所在的主机也是要监控的，所以在zabbix_server主机上也要安装上zabbix_agent。此外，为了方安装mysqltools会自动在zabbix_server所在的主机上安装上zabbix_agent。
+      根据上面规划提到的zabbix_server在172.16.192.101这个主机上，所以config.yaml的内容应该如下
+      ```
+      zabbix_server_ip: 172.16.192.101
+      ```
+      ---
+
+      **2):修改install_zabbix_server.yaml文件中的目标主机为zabbixstudio**
+      ```
+      ---
+        - hosts: zabbixstudio
+          vars_files:
+      ```
+
+      ---
+
+      **3):安装zabbix_server**
+      
+      ```
+      cd mysqltools/deploy/ansible/zabbix
+      ansible-playbook install_zabbix_server.yaml
+      ```
+      输出如下：
+      ```
+      PLAY [zabbixstudio] ***********************************************************************************************************
+      
+      TASK [Gathering Facts] ********************************************************************************************************
+      ok: [zabbixstudio]
+      
+      TASK [add zabbix user to system] **********************************************************************************************
+      changed: [zabbixstudio]
+      ....
+      
+      TASK [config zabbix_server start up on boot] **********************************************************************************
+      changed: [zabbixstudio]
+      
+      PLAY RECAP ********************************************************************************************************************
+      zabbixstudio               : ok=32   changed=26   unreachable=0    failed=0 
+      ```
+
+      ---
+
+      **4):通过web配置zabbix**
+
+      1、访问zabbix-web界面 
+
+      <img src="./docs/imgs/zabbix-0001.png"/>
+
+      ---
+
+      2、下一步
+
+      <img src="./docs/imgs/zabbix-0002.png"/>
+
+      ---
+
+      3、配置zabbix管理界面连接后台数据库的方式
+
+      <img src="./docs/imgs/zabbix-0003.png"/>
+      这里的password指的是数据库端zabbix用户的密码、这个东西引用的是config.yaml中的`mysql_zabbix_password`这个配置项
+
+      然后就一直点“next step ”
+
+      ---
+
+      4、登录到zabbix-web
+
+      <img src="./docs/imgs/zabbix-0004.png"/>
+
+      这里的账号密码是死的，账号名：`admin` 密码：`zabbix`
+      
+      ---
+
+      5、zabbix-web 主页
+
+      <img src="./docs/imgs/zabbix-0005.png"/>
+
+      ---
+
+   10. ### 安装zabbix客户端
+       **1): 和安装服务端一样只不过把yaml文件换成install_zabbix_agent.yaml**
+       ```
+       ansible-playbook install_zabbix_agent.yaml 
+       ```
+       输出如下：
+       ```
+       PLAY [sqlstudio] *******************************************************************************
+       TASK [Gathering Facts] *************************************************************************
+       ok: [sqlstudio]
+       TASK [transfer zabbix install package to remote host and unarchive to /tmp/] *******************
+       changed: [sqlstudio]
+       TASK [transfer install script to remonte host] *************************************************
+       changed: [sqlstudio]
+       TASK [install zabbix_agent_node] ***************************************************************
+       changed: [sqlstudio]
+       TASK [change owner to zabbix user] *************************************************************
+       changed: [sqlstudio]
+       TASK [make link] *******************************************************************************
+       changed: [sqlstudio]
+       TASK [transfer zabbix config file to remonte host] *********************************************
+       changed: [sqlstudio]
+       TASK [remove /tmp/install_zabbix_agent.sh] *****************************************************
+       changed: [sqlstudio]
+       TASK [remove /tmp/zabbix-3.4.3] ****************************************************************
+       changed: [sqlstudio]
+       TASK [export path env variable] ****************************************************************
+       ok: [sqlstudio]
+       TASK [export path env to /root/.bashrc] ********************************************************
+       ok: [sqlstudio]
+       TASK [transfer monitor script to remonte host] *************************************************
+       changed: [sqlstudio]
+       TASK [config file mode] ************************************************************************
+       changed: [sqlstudio]
+       TASK [transfer mtls.conf to remonte] ***********************************************************
+       changed: [sqlstudio]
+       TASK [config mtls.conf's mode] *****************************************************************
+       ok: [sqlstudio]
+       TASK [config zabbix_agent systemd] *************************************************************
+       ok: [sqlstudio]
+       TASK [start zabbix_agent] **********************************************************************
+       changed: [sqlstudio]
+       TASK [config zabbix_agent start up on boot] ****************************************************
+       ok: [sqlstudio]
+       PLAY RECAP *************************************************************************************
+       sqlstudio                  : ok=28   changed=12   unreachable=0    failed=0 
+       ```
+  
+   11. ### 通过mysqltools中给出的模板来监控mysql
+       **1):目前mysqltools提供了对MySQL单机的监控模板、把模板导入再关联到你的MySQL主机就能完成监控项的收集与画图了**
+      <img src="./docs/imgs/mysql_basic_screan-0001.png"/>
+      MySQL基本监控模板的位置在mysqltools/deploy/ansible/zabbix/template/zbx_export_mysql_basic_templates.xml
+   ---     
 
 
 
