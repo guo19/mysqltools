@@ -21,6 +21,8 @@ set sql_log_bin=0;
     grant super              on *.* to {{mysql_backup_user}}@'localhost';
     grant create,insert,select      on percona_schema.xtrabackup_history to {{mysql_backup_user}}@'localhost';
 
+    install plugin validate_password soname 'validate_password.so';
+
     flush privileges;
 
 set sql_log_bin=1;
@@ -32,7 +34,7 @@ set sql_log_bin=0;
     
     alter user root@'localhost' identified by '{{ mysql_root_password }}' ;
     create user root@'127.0.0.1' identified by '{{ mysql_root_password }}';
-    grant all on *.* to root@'127.0.0.1' with grant option;
+    grant all on *.* to root@'127.0.0.1';
     grant replication client on *.* to {{mysql_monitor_user}}@'127.0.0.1';
 
     create user {{mysql_backup_user}}@'127.0.0.1' identified by '{{mysql_backup_password}}';
@@ -51,6 +53,8 @@ set sql_log_bin=0;
     grant process            on *.* to {{mysql_backup_user}}@'localhost';
     grant super              on *.* to {{mysql_backup_user}}@'localhost';
     grant create,insert,select      on percona_schema.xtrabackup_history to {{mysql_backup_user}}@'localhost';
+
+    install plugin validate_password soname 'validate_password.so';
 set sql_log_bin=1;
 
 {% endif %}
